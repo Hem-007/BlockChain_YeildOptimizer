@@ -5,6 +5,7 @@ import { useWeb3 } from "@/contexts/web3-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Wallet, PieChart, TrendingUp, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import React, { useState, useEffect } from "react";
 
 interface BalanceItemProps {
   icon: React.ElementType;
@@ -36,7 +37,7 @@ export function BalanceDisplay() {
   const [isLoadingData, setIsLoadingData] = useState(true);
 
   // Simulate loading delay or use useEffect with actual data fetching status
-  useState(() => {
+  useEffect(() => {
     if (isConnected) {
       // This is just a placeholder. In a real app, `isLoadingData` would be true
       // while `getHBTBalance` and `getVaultData` are running.
@@ -48,7 +49,7 @@ export function BalanceDisplay() {
     } else {
       setIsLoadingData(false);
     }
-  });
+  }, [isConnected, account]); // Added account to dependencies for re-check if account changes while connected
   
   if (!isConnected) {
     return (
@@ -94,3 +95,4 @@ export function BalanceDisplay() {
     </Card>
   );
 }
+

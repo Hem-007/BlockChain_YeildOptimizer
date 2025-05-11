@@ -1,14 +1,14 @@
-
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'import type {ethers} from "ethers"';
+import type { Signer } from "ethers";
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
 import { BrowserProvider, Contract, formatUnits, parseUnits } from 'ethers';
 import { useToast } from "@/hooks/use-toast";
 import { HBT_TOKEN_ADDRESS, YIELD_HARBOR_VAULT_ADDRESS, HBT_TOKEN_ABI, YIELD_HARBOR_VAULT_ABI, SEPOLIA_CHAIN_ID } from '@/lib/constants';
 
 interface Web3ContextType {
   provider: BrowserProvider | null;
-  signer: ethers.Signer | null;
+  signer: Signer | null;
   account: string | null;
   chainId: bigint | null;
   hbtBalance: string;
@@ -30,7 +30,7 @@ const Web3Context = createContext<Web3ContextType | undefined>(undefined);
 
 export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [provider, setProvider] = useState<BrowserProvider | null>(null);
-  const [signer, setSigner] = useState<ethers.Signer | null>(null);
+  const [signer, setSigner] = useState<Signer | null>(null);
   const [account, setAccount] = useState<string | null>(null);
   const [chainId, setChainId] = useState<bigint | null>(null);
   const [hbtBalance, setHbtBalance] = useState<string>("0");
@@ -40,15 +40,36 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const { toast } = useToast();
 
+  // Moved isConnected definition earlier and wrapped with useMemo
+  const isConnected = useMemo(() => {
+    return !!provider && !!signer && !!account && chainId === SEPOLIA_CHAIN_ID;
+  }, [provider, signer, account, chainId]);
+
   const SEPOLIA_CHAIN_ID_HEX = `0x${SEPOLIA_CHAIN_ID.toString(16)}`;
+
+  const disconnectWallet = useCallback(() => {
+    setProvider(null);
+    setSigner(null);
+    setAccount(null);
+    setChainId(null);
+    setHbtBalance("0");
+    setVaultShares("0");
+    setVaultShareValue("0");
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem("isWalletConnected");
+    }
+    toast({ title: "Wallet Disconnected" });
+  }, [toast]);
 
   const handleAccountsChanged = useCallback((accounts: string[]) => {
     if (accounts.length === 0) {
       disconnectWallet();
     } else {
       setAccount(accounts[0]);
+      // Re-fetch data for new account if connected state implies it
+      // This will be handled by the useEffect watching `account` and `isConnected`
     }
-  }, []);
+  }, [disconnectWallet]);
 
   const handleChainChanged = useCallback((newChainId: string) => {
     const numChainId = BigInt(newChainId);
@@ -59,9 +80,12 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
         description: `Please switch to Sepolia testnet. Detected chain ID: ${newChainId}`,
         variant: "destructive",
       });
-      disconnectWallet(); // Or prompt to switch
+      // Do not disconnect here, allow isConnected to reflect false, UI can react.
+      // If we want to force disconnect: disconnectWallet();
     }
-  }, [toast]);
+    // Data fetching will be re-triggered by useEffect watching `chainId` and `isConnected`
+  }, [toast, SEPOLIA_CHAIN_ID]);
+
 
   const connectWallet = useCallback(async () => {
     if (typeof window.ethereum === 'undefined') {
@@ -85,17 +109,16 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (network.chainId !== SEPOLIA_CHAIN_ID) {
           toast({
             title: "Wrong Network",
-            description: "Please switch to Sepolia testnet.",
+            description: "Please switch to Sepolia testnet. Attempting to switch...",
             variant: "destructive",
           });
-          // Attempt to switch network
           try {
             await window.ethereum.request({
               method: 'wallet_switchEthereumChain',
               params: [{ chainId: SEPOLIA_CHAIN_ID_HEX }],
             });
+            // After successful switch, chainChanged event will fire and update chainId state
           } catch (switchError: any) {
-            // This error code indicates that the chain has not been added to MetaMask.
             if (switchError.code === 4902) {
               toast({
                 title: "Network Not Added",
@@ -105,44 +128,40 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
             } else {
                toast({ title: "Network Switch Failed", description: switchError.message, variant: "destructive"});
             }
-            return;
+            // Even if switch fails, keep the connection attempt's state updates
+            // isConnected will be false, UI will guide user.
+            return; 
           }
         }
         
-        localStorage.setItem("isWalletConnected", "true");
-        toast({ title: "Wallet Connected", description: `Connected to ${currentAccount.substring(0,6)}...${currentAccount.substring(currentAccount.length-4)}`});
+        if (typeof window !== 'undefined') {
+          localStorage.setItem("isWalletConnected", "true");
+        }
+        // Toast for successful connection will be handled by useEffect watching isConnected
       }
     } catch (error: any) {
       toast({ title: "Connection Failed", description: error.message, variant: "destructive" });
     }
-  }, [toast, SEPOLIA_CHAIN_ID_HEX]);
+  }, [toast, SEPOLIA_CHAIN_ID_HEX, SEPOLIA_CHAIN_ID]);
 
-  const disconnectWallet = useCallback(() => {
-    setProvider(null);
-    setSigner(null);
-    setAccount(null);
-    setChainId(null);
-    setHbtBalance("0");
-    setVaultShares("0");
-    setVaultShareValue("0");
-    localStorage.removeItem("isWalletConnected");
-    toast({ title: "Wallet Disconnected" });
-  }, [toast]);
 
   useEffect(() => {
-    if (localStorage.getItem("isWalletConnected") === "true") {
+    if (typeof window !== 'undefined' && localStorage.getItem("isWalletConnected") === "true" && !account) {
+      // Only attempt auto-connect if not already connected/connecting
       connectWallet();
     }
-  }, [connectWallet]);
+  }, [connectWallet, account]);
 
   useEffect(() => {
-    if (window.ethereum) {
+    if (typeof window !== 'undefined' && window.ethereum) {
       window.ethereum.on("accountsChanged", handleAccountsChanged);
       window.ethereum.on("chainChanged", handleChainChanged);
 
       return () => {
-        window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
-        window.ethereum.removeListener("chainChanged", handleChainChanged);
+        if (window.ethereum.removeListener) {
+          window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
+          window.ethereum.removeListener("chainChanged", handleChainChanged);
+        }
       };
     }
   }, [handleAccountsChanged, handleChainChanged]);
@@ -152,7 +171,7 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const tokenContract = new Contract(HBT_TOKEN_ADDRESS, HBT_TOKEN_ABI, signer);
       const balance = await tokenContract.balanceOf(account);
-      setHbtBalance(formatUnits(balance, 18)); // Assuming 18 decimals
+      setHbtBalance(formatUnits(balance, 18)); 
     } catch (error: any) {
       toast({ title: "Error fetching HBT balance", description: error.message, variant: "destructive" });
       setHbtBalance("0");
@@ -182,10 +201,16 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     if (isConnected) {
+      toast({ title: "Wallet Connected", description: `Connected to ${account?.substring(0,6)}...${account?.substring(account.length-4)} on Sepolia.`});
       getHBTBalance();
       getVaultData();
+    } else if (account && chainId !== SEPOLIA_CHAIN_ID) {
+      // Handled by handleChainChanged or connectWallet logic
+    } else if (!account && provider) {
+      // This case means wallet was disconnected or accounts changed to none
+      // toast({ title: "Wallet Disconnected" }); // disconnectWallet already toasts
     }
-  }, [isConnected, getHBTBalance, getVaultData, account, chainId]);
+  }, [isConnected, getHBTBalance, getVaultData, account, chainId, provider, toast, SEPOLIA_CHAIN_ID]);
 
 
   const approveHBT = async (amount: string): Promise<boolean> => {
@@ -195,7 +220,7 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     try {
       const tokenContract = new Contract(HBT_TOKEN_ADDRESS, HBT_TOKEN_ABI, signer);
-      const amountToApprove = parseUnits(amount, 18); // Assuming 18 decimals
+      const amountToApprove = parseUnits(amount, 18); 
       const tx = await tokenContract.approve(YIELD_HARBOR_VAULT_ADDRESS, amountToApprove);
       await tx.wait();
       toast({ title: "Approval Successful", description: `${amount} HBT approved for vault.` });
@@ -220,20 +245,25 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
 
   const depositToVault = async (amount: string): Promise<boolean> => {
-    if (!signer) {
-      toast({ title: "Error", description: "Wallet not connected.", variant: "destructive" });
+    if (!isConnected || !signer) {
+      toast({ title: "Error", description: "Wallet not connected or on wrong network.", variant: "destructive" });
       return false;
     }
     try {
       const vaultContract = new Contract(YIELD_HARBOR_VAULT_ADDRESS, YIELD_HARBOR_VAULT_ABI, signer);
-      const amountToDeposit = parseUnits(amount, 18); // Assuming 18 decimals
+      const amountToDeposit = parseUnits(amount, 18); 
       
-      // Check allowance
       const allowanceString = await getAllowance();
       const allowance = parseUnits(allowanceString, 18);
       if (allowance < amountToDeposit) {
-        const approved = await approveHBT(amount);
-        if (!approved) return false;
+        toast({ title: "Approval Required", description: `Please approve ${amount} HBT for the vault.`, variant: "default"});
+        // Frontend form should handle calling approveHBT separately based on allowance check.
+        // For direct call scenario, let's assume approval must be sufficient.
+        // Or, trigger approval from here:
+        // const approved = await approveHBT(amount);
+        // if (!approved) return false;
+        // For now, expect UI to ensure approval or return false
+        return false; // Indicate approval needed if not sufficient
       }
       
       const tx = await vaultContract.deposit(amountToDeposit);
@@ -249,13 +279,13 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const withdrawFromVault = async (shares: string): Promise<boolean> => {
-    if (!signer) {
-      toast({ title: "Error", description: "Wallet not connected.", variant: "destructive" });
+    if (!isConnected || !signer) {
+      toast({ title: "Error", description: "Wallet not connected or on wrong network.", variant: "destructive" });
       return false;
     }
     try {
       const vaultContract = new Contract(YIELD_HARBOR_VAULT_ADDRESS, YIELD_HARBOR_VAULT_ABI, signer);
-      const sharesToWithdraw = parseUnits(shares, 18); // Assuming shares also have 18 decimals conceptually
+      const sharesToWithdraw = parseUnits(shares, 18); 
       const tx = await vaultContract.withdraw(sharesToWithdraw);
       await tx.wait();
       toast({ title: "Withdrawal Successful", description: `Withdrew assets for ${shares} shares.` });
@@ -268,8 +298,6 @@ export const Web3Provider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
-  const isConnected = !!provider && !!signer && !!account && chainId === SEPOLIA_CHAIN_ID;
-
   return (
     <Web3Context.Provider value={{ 
         provider, 
@@ -305,6 +333,6 @@ export const useWeb3 = (): Web3ContextType => {
 
 declare global {
   interface Window {
-    ethereum: any; // Define a more specific type if available
+    ethereum: any; 
   }
 }

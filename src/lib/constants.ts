@@ -3,10 +3,12 @@
 export const SEPOLIA_CHAIN_ID = 11155111n; // Sepolia Testnet Chain ID
 
 // Placeholder Addresses - Replace with your deployed contract addresses
-export const HBT_TOKEN_ADDRESS = "0xYourHarborTokenAddressOnSepolia";
-export const YIELD_HARBOR_VAULT_ADDRESS = "0xYourYieldHarborVaultAddressOnSepolia";
-export const STRATEGY_A_ADDRESS = "0xYourStrategyAAddressOnSepolia";
-export const STRATEGY_B_ADDRESS = "0xYourStrategyBAddressOnSepolia";
+// Using the zero address as a valid placeholder to prevent Ethers.js errors.
+// Replace these with actual deployed contract addresses for functionality.
+export const HBT_TOKEN_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const YIELD_HARBOR_VAULT_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const STRATEGY_A_ADDRESS = "0x0000000000000000000000000000000000000001"; // Different to avoid collision if used as map keys
+export const STRATEGY_B_ADDRESS = "0x0000000000000000000000000000000000000002";
 
 // Minimal ABIs for frontend interaction
 export const HBT_TOKEN_ABI = [
@@ -60,6 +62,7 @@ export interface StrategyInfo {
 export const MOCK_STRATEGIES_DATA: StrategyInfo[] = [
   { address: STRATEGY_A_ADDRESS, name: "AlphaStaker ETH", apy: 5.25, tvl: "150000", tokenSymbol: "stETH" },
   { address: STRATEGY_B_ADDRESS, name: "BetaLender USDC", apy: 3.75, tvl: "250000", tokenSymbol: "USDC" },
-  { address: "0xMockStrategyC", name: "GammaPool BTC", apy: 4.50, tvl: "100000", tokenSymbol: "WBTC" },
-  { address: "0xMockStrategyD", name: "DeltaYield USDT", apy: 6.10, tvl: "300000", tokenSymbol: "USDT"},
+  { address: "0x0000000000000000000000000000000000000003", name: "GammaPool BTC", apy: 4.50, tvl: "100000", tokenSymbol: "WBTC" },
+  { address: "0x0000000000000000000000000000000000000004", name: "DeltaYield USDT", apy: 6.10, tvl: "300000", tokenSymbol: "USDT"},
 ];
+

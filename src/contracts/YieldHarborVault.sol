@@ -1,246 +1,325 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-// Interface for a Strategy contract
-interface IStrategy {
-    function token() external view returns (address); // The token this strategy works with
-    function getAPY() external view returns (uint256); // Annual Percentage Yield, e.g., 500 for 5.00%
-    function depositToStrategy(uint256 amount) external; // Called by Vault to deposit funds
-    function withdrawFromStrategy(uint256 amount) external; // Called by Vault to withdraw funds
-    function balanceOfVault() external view returns (uint256); // How much the Vault has deposited
-    function name() external view returns (string); // Name of the strategy
-}
+import "./interfaces/IERC20.sol";
+import "./interfaces/IMockStrategy.sol"; // Assuming an interface for mock strategies
 
 /**
  * @title YieldHarborVault
- * @dev A DeFi vault that aggregates yield from various (simulated) sources.
- * Users deposit an ERC20 token (HBT) and receive shares representing their portion of the vault.
- * The vault simulates allocating funds to the highest-yielding strategy.
+ * @dev A DeFi vault that accepts deposits of a specific ERC20 token (asset),
+ * issues shares (also ERC20) to depositors, and (conceptually) allocates
+ * assets to yield-generating strategies.
  */
-contract YieldHarborVault is Ownable, ReentrancyGuard {
-    IERC20 public immutable asset; // The HBT token used for deposits/withdrawals
+contract YieldHarborVault is ERC20, Ownable, ReentrancyGuard {
+    IERC20 public immutable asset; // The underlying ERC20 token this vault manages
 
-    mapping(address => uint256) public shares; // User's shares in the vault
-    uint256 public totalShares; // Total shares issued by the vault
+    // Strategy Management
+    address[] public strategyAddresses;
+    mapping(address => uint256) public strategyAllocations; // Tracks principal allocated to each strategy
+    address public currentStrategy; // For simplicity, assumes one active strategy or a portfolio manager contract
 
-    IStrategy[] public strategies; // Array of available strategy contracts
-    address public currentStrategy; // The strategy currently being used (simulated allocation)
-    mapping(address => uint256) public strategyAllocations; // Amount of 'asset' allocated to each strategy by this vault
+    /**
+     * @dev Emitted when a user deposits assets into the vault.
+     * @param user The address of the depositor.
+     * @param assetsDeposited The amount of underlying assets deposited.
+     * @param sharesIssued The amount of vault shares issued to the depositor.
+     */
+    event Deposited(address indexed user, uint256 assetsDeposited, uint256 sharesIssued);
 
-    uint256 private constant PRICE_PRECISION = 1e18; // For pricePerShare calculations
+    /**
+     * @dev Emitted when a user withdraws assets from the vault.
+     * @param user The address of the withdrawer.
+     * @param assetsWithdrawn The amount of underlying assets withdrawn.
+     * @param sharesBurned The amount of vault shares burned.
+     */
+    event Withdrawn(address indexed user, uint256 assetsWithdrawn, uint256 sharesBurned);
 
-    event Deposited(address indexed user, uint256 assetAmount, uint256 sharesIssued);
-    event Withdrawn(address indexed user, uint256 assetAmount, uint256 sharesBurned);
-    event StrategyAdded(address indexed strategyAddress);
-    event StrategyAllocated(address indexed strategyAddress, uint256 amountAllocated);
-    event FundsMoved(address indexed fromStrategy, address indexed toStrategy, uint256 amountMoved);
+    /**
+     * @dev Emitted when assets are allocated to a strategy.
+     * @param strategy The address of the strategy.
+     * @param amount The amount of assets allocated.
+     */
+    event StrategyAllocated(address indexed strategy, uint256 amount);
 
-    modifier onlyEOA() {
-        require(tx.origin == msg.sender, "Vault: Caller cannot be a contract");
-        _;
-    }
+    /**
+     * @dev Emitted when assets are moved from a strategy.
+     * @param strategy The address of the strategy.
+     * @param amount The amount of assets moved.
+     */
+    event StrategyDeallocated(address indexed strategy, uint256 amount);
 
-    constructor(address _assetAddress, address initialOwner) Ownable(initialOwner) {
+
+    /**
+     * @dev Constructor for the YieldHarborVault.
+     * @param _assetAddress The address of the ERC20 token this vault will accept.
+     * @param _vaultName The name for the vault's shares token (e.g., "YieldHarbor HBT Shares").
+     * @param _vaultSymbol The symbol for the vault's shares token (e.g., "yhHBT").
+     * @param _initialOwner The address that will initially own this contract.
+     */
+    constructor(
+        address _assetAddress,
+        string memory _vaultName,
+        string memory _vaultSymbol,
+        address _initialOwner
+    ) ERC20(_vaultName, _vaultSymbol) Ownable(_initialOwner) {
         require(_assetAddress != address(0), "Vault: Asset address cannot be zero");
         asset = IERC20(_assetAddress);
+        // Vault share decimals will match the underlying asset's decimals
+        // This is automatically handled by ERC20.sol if `_decimals()` is not overridden.
+        // For explicit control, you might call `_setupDecimals(IERC20(_assetAddress).decimals());`
+        // but OpenZeppelin's ERC20 defaults to 18 decimals. If asset has different, override _decimals().
     }
 
     /**
-     * @dev Adds a new strategy contract to the list of available strategies.
-     * Only callable by the owner.
-     * @param _strategyAddress The address of the strategy contract.
+     * @dev Returns the decimals of the vault's share token. Overrides ERC20's default.
+     * It's set to match the underlying asset's decimals for easier calculations.
      */
-    function addStrategy(address _strategyAddress) public onlyOwner {
-        require(_strategyAddress != address(0), "Vault: Strategy address cannot be zero");
-        // Optional: Check if strategy.token() matches vault.asset() if strategies are asset-specific
-        // require(IStrategy(_strategyAddress).token() == address(asset), "Vault: Strategy token mismatch");
-        
-        // Prevent duplicate strategies
-        for (uint i = 0; i < strategies.length; i++) {
-            require(address(strategies[i]) != _strategyAddress, "Vault: Strategy already added");
-        }
-        strategies.push(IStrategy(_strategyAddress));
-        emit StrategyAdded(_strategyAddress);
+    function _decimals() internal view virtual override returns (uint8) {
+        return IERC20(address(asset)).decimals();
     }
 
     /**
-     * @dev Calculates the total value of assets managed by the vault.
-     * This includes assets held directly by the vault and assets deployed in strategies.
+     * @dev Calculates the total amount of underlying assets managed by the vault.
+     * This includes assets idle in the vault and assets deployed to strategies (including simulated yield).
      */
     function totalAssets() public view returns (uint256) {
-        uint256 vaultBalance = asset.balanceOf(address(this));
-        uint256 assetsInStrategies = 0;
-        // In a real scenario, balanceOfVault() would return the current value.
-        // For this simulation, strategyAllocations holds the principal deposited.
-        // Actual yield would increase this. We'll assume strategyAllocations reflects current value.
-        for (uint i = 0; i < strategies.length; i++) {
-            assetsInStrategies += strategyAllocations[address(strategies[i])];
+        uint256 _total = asset.balanceOf(address(this)); // Assets idle in vault
+        for (uint256 i = 0; i < strategyAddresses.length; i++) {
+            IMockStrategy strategy = IMockStrategy(strategyAddresses[i]);
+            // Assumes strategy.balanceOfVault() returns current value including yield
+            _total += strategy.balanceOfVault();
         }
-        return vaultBalance + assetsInStrategies;
+        return _total;
     }
 
     /**
-     * @dev Calculates the price of one share in terms of the asset token.
-     * Price per share = Total Assets / Total Shares.
+     * @dev Calculates the current price per share in terms of the underlying asset.
+     * pricePerShare = totalAssets / totalSupplyOfShares
      */
     function pricePerShare() public view returns (uint256) {
-        if (totalShares == 0) {
-            return PRICE_PRECISION; // Initial price if no shares yet (1 asset unit per share)
+        uint256 _totalSupply = totalSupply(); // Total shares issued by the vault
+        uint256 _totalAssets = totalAssets();
+
+        if (_totalSupply == 0 || _totalAssets == 0) {
+            // If no shares or no assets, 1 share = 1 unit of asset (scaled by decimals)
+            return (10**uint256(decimals()));
         }
-        return (totalAssets() * PRICE_PRECISION) / totalShares;
+        // pricePerShare is scaled by 10**decimals to maintain precision
+        return (_totalAssets * (10**uint256(decimals()))) / _totalSupply;
     }
 
     /**
-     * @dev Deposits assets into the vault and mints shares for the user.
-     * @param _amount The amount of asset tokens to deposit.
+     * @dev Converts a desired amount of underlying assets to the equivalent amount of vault shares.
+     * @param _assetsAmount The amount of underlying assets.
+     * @return The equivalent amount of vault shares.
      */
-    function deposit(uint256 _amount) public nonReentrant onlyEOA {
-        require(_amount > 0, "Vault: Deposit amount must be positive");
+    function convertToShares(uint256 _assetsAmount) public view returns (uint256) {
+        if (_assetsAmount == 0) return 0;
+        uint256 _pricePerShare = pricePerShare();
+        // shares = assets * (10**decimals) / pricePerShare
+        // This formula maintains precision as pricePerShare is already scaled.
+        return (_assetsAmount * (10**uint256(decimals()))) / _pricePerShare;
+    }
 
-        uint256 currentPricePerShare = pricePerShare();
-        uint256 sharesToIssue = (_amount * PRICE_PRECISION) / currentPricePerShare;
-        require(sharesToIssue > 0, "Vault: Shares to issue must be positive");
+    /**
+     * @dev Converts an amount of vault shares to the equivalent amount of underlying assets.
+     * @param _sharesAmount The amount of vault shares.
+     * @return The equivalent amount of underlying assets.
+     */
+    function convertToAssets(uint256 _sharesAmount) public view returns (uint256) {
+        if (_sharesAmount == 0) return 0;
+        uint256 _pricePerShare = pricePerShare();
+        // assets = shares * pricePerShare / (10**decimals)
+        return (_sharesAmount * _pricePerShare) / (10**uint256(decimals()));
+    }
 
-        totalShares += sharesToIssue;
-        shares[msg.sender] += sharesToIssue;
+    /**
+     * @dev Deposits `_amount` of the underlying asset into the vault.
+     * The caller must have previously approved the vault to spend at least `_amount` of the asset.
+     * Mints vault shares to the depositor (`msg.sender`).
+     * @param _amount The amount of underlying asset to deposit.
+     */
+    function deposit(uint256 _amount) public nonReentrant {
+        require(_amount > 0, "Vault: Deposit amount must be > 0");
 
+        uint256 sharesToMint = convertToShares(_amount);
+        require(sharesToMint > 0, "Vault: Shares to mint must be > 0");
+
+        // Pull assets from depositor's wallet
         bool success = asset.transferFrom(msg.sender, address(this), _amount);
-        require(success, "Vault: Asset transfer failed");
+        require(success, "Vault: Asset transferFrom failed");
 
-        emit Deposited(msg.sender, _amount, sharesToIssue);
+        // Mint vault shares to the depositor
+        _mint(msg.sender, sharesToMint);
 
-        // Conceptually, new funds could trigger reallocation, or be added to current strategy.
-        // For simplicity, new funds are held by vault or manually allocated.
+        emit Deposited(msg.sender, _amount, sharesToMint);
+
+        // Optional: Auto-allocate deposited funds to a strategy
+        // if (currentStrategy != address(0)) {
+        //     _allocateToStrategy(currentStrategy, _amount);
+        // }
     }
 
     /**
-     * @dev Withdraws assets from the vault by burning user's shares.
-     * @param _sharesAmount The amount of shares to burn.
+     * @dev Withdraws assets from the vault by redeeming `_sharesAmount` of vault shares.
+     * Burns the specified amount of shares from `msg.sender`.
+     * Transfers the corresponding amount of underlying asset back to `msg.sender`.
+     * @param _sharesAmount The amount of vault shares to redeem.
      */
-    function withdraw(uint256 _sharesAmount) public nonReentrant onlyEOA {
-        require(_sharesAmount > 0, "Vault: Shares to withdraw must be positive");
-        require(shares[msg.sender] >= _sharesAmount, "Vault: Insufficient shares");
+    function withdraw(uint256 _sharesAmount) public nonReentrant {
+        require(_sharesAmount > 0, "Vault: Shares amount must be > 0");
+        require(balanceOf(msg.sender) >= _sharesAmount, "Vault: Insufficient shares");
 
-        uint256 currentPricePerShare = pricePerShare();
-        uint256 assetAmountToReturn = (_sharesAmount * currentPricePerShare) / PRICE_PRECISION;
-        require(assetAmountToReturn > 0, "Vault: Asset amount to return must be positive");
-
-        shares[msg.sender] -= _sharesAmount;
-        totalShares -= _sharesAmount;
-
-        // Check if vault has enough balance, if not, "withdraw" from current strategy (conceptually)
-        if (asset.balanceOf(address(this)) < assetAmountToReturn) {
-            uint256 neededFromStrategy = assetAmountToReturn - asset.balanceOf(address(this));
-            if (currentStrategy != address(0) && strategyAllocations[currentStrategy] >= neededFromStrategy) {
-                // Simulate withdrawing from strategy to cover withdrawal
-                // IStrategy(currentStrategy).withdrawFromStrategy(neededFromStrategy); // This would be a real call
-                strategyAllocations[currentStrategy] -= neededFromStrategy; 
-                // Assume tokens are now in vault. In reality, strategy would transfer back.
-                 emit FundsMoved(currentStrategy, address(this), neededFromStrategy);
-            } else {
-                // This case means vault is underfunded even after pulling from strategy.
-                // This shouldn't happen in a well-managed vault; implies loss or lockup.
-                // For simulation, we might revert or partially fulfill. Reverting is safer.
-                revert("Vault: Insufficient liquidity to withdraw, try later or smaller amount.");
-            }
-        }
+        uint256 assetsToWithdraw = convertToAssets(_sharesAmount);
+        require(assetsToWithdraw > 0, "Vault: Assets to withdraw must be > 0");
         
-        bool success = asset.transfer(msg.sender, assetAmountToReturn);
+        // Ensure vault has enough assets (considering assets might be in strategies)
+        // This might involve recalling assets from strategies if idle balance is insufficient.
+        // For simplicity in this version, we assume sufficient liquid assets or that
+        // a separate mechanism handles recalling from strategies.
+        // A robust implementation would check `asset.balanceOf(address(this))` and recall if needed.
+        // require(asset.balanceOf(address(this)) >= assetsToWithdraw, "Vault: Insufficient liquid assets for withdrawal");
+
+
+        // Burn shares from the withdrawer
+        _burn(msg.sender, _sharesAmount);
+
+        // Transfer assets back to the withdrawer
+        bool success = asset.transfer(msg.sender, assetsToWithdraw);
         require(success, "Vault: Asset transfer failed");
 
-        emit Withdrawn(msg.sender, assetAmountToReturn, _sharesAmount);
-    }
-
-    /**
-     * @dev Returns the value of a user's shares in terms of the asset token.
-     * @param _account The user's account address.
-     */
-    function balanceOf(address _account) public view returns (uint256) {
-        uint256 userShares = shares[_account];
-        if (userShares == 0) return 0;
-        return (userShares * pricePerShare()) / PRICE_PRECISION;
+        emit Withdrawn(msg.sender, assetsToWithdraw, _sharesAmount);
     }
     
     /**
-     * @dev Simulates allocating funds to the strategy with the highest APY.
-     * Only callable by the owner. In a real scenario, this might be automated.
-     * This is a conceptual allocation.
+     * @dev Returns the value of `account`'s shares in terms of the underlying asset.
+     * This is different from `balanceOf` (which returns shares).
+     * This function is not part of standard ERC20/ERC4626 but can be useful.
+     * For ERC4626 compliance, this would be `previewRedeem(balanceOf(account))`.
      */
-    function allocateToBestStrategy() public onlyOwner {
-        require(strategies.length > 0, "Vault: No strategies added");
+    function valueOfShares(address account) external view returns (uint256) {
+        return convertToAssets(balanceOf(account));
+    }
 
-        address bestStrategyAddress = address(0);
-        uint256 highestApy = 0;
 
-        for (uint i = 0; i < strategies.length; i++) {
-            IStrategy strategy = strategies[i];
-            uint256 currentApy = strategy.getAPY();
-            if (currentApy > highestApy) {
-                highestApy = currentApy;
-                bestStrategyAddress = address(strategy);
+    // --- Strategy Management Functions (Owner-only) ---
+
+    /**
+     * @dev Adds a new strategy contract to the vault.
+     * @param _strategyAddress The address of the strategy contract.
+     */
+    function addStrategy(address _strategyAddress) external onlyOwner {
+        require(_strategyAddress != address(0), "Vault: Strategy address cannot be zero");
+        // Ensure strategy is not already added
+        for (uint i = 0; i < strategyAddresses.length; i++) {
+            require(strategyAddresses[i] != _strategyAddress, "Vault: Strategy already added");
+        }
+        strategyAddresses.push(_strategyAddress);
+        // Initialize allocation for this strategy to 0
+        strategyAllocations[_strategyAddress] = 0; 
+    }
+
+    /**
+     * @dev (Simulated) Allocates assets to the "best" strategy.
+     * In a real scenario, this would involve complex logic to determine the best strategy.
+     * Here, it might just pick one or be manually triggered.
+     * This function is a placeholder for more complex strategy management logic.
+     */
+    function allocateToBestStrategy() external onlyOwner {
+        // Placeholder: Example logic to allocate all idle assets to the first strategy
+        // A real implementation would query APYs, risk scores, etc.
+        if (strategyAddresses.length == 0) return; // No strategies to allocate to
+
+        address bestStrategy = strategyAddresses[0]; // Simplified: pick first strategy
+        uint256 idleAssets = asset.balanceOf(address(this));
+
+        if (idleAssets > 0) {
+            _allocateToStrategy(bestStrategy, idleAssets);
+        }
+        currentStrategy = bestStrategy; // Update current strategy (simplistic)
+    }
+
+    /**
+     * @dev Internal function to allocate assets to a specific strategy.
+     * @param _strategyAddress The address of the strategy.
+     * @param _amount The amount of assets to allocate.
+     */
+    function _allocateToStrategy(address _strategyAddress, uint256 _amount) internal {
+        require(strategyAllocations[_strategyAddress] != 0 || _isStrategyAdded(_strategyAddress), "Vault: Strategy not added or unknown");
+        require(_amount > 0, "Vault: Allocation amount must be > 0");
+        require(asset.balanceOf(address(this)) >= _amount, "Vault: Insufficient idle assets");
+
+        asset.approve(_strategyAddress, _amount);
+        IMockStrategy(_strategyAddress).depositToStrategy(_amount); // Strategy pulls funds
+
+        strategyAllocations[_strategyAddress] += _amount;
+        emit StrategyAllocated(_strategyAddress, _amount);
+    }
+
+    /**
+     * @dev Internal function to deallocate assets from a specific strategy.
+     * @param _strategyAddress The address of the strategy.
+     * @param _amount The amount of assets to deallocate.
+     */
+    function _deallocateFromStrategy(address _strategyAddress, uint256 _amount) internal {
+        require(_isStrategyAdded(_strategyAddress), "Vault: Strategy not added");
+        require(_amount > 0, "Vault: Deallocation amount must be > 0");
+        require(strategyAllocations[_strategyAddress] >= _amount, "Vault: Not enough allocated to strategy");
+
+        IMockStrategy(_strategyAddress).withdrawFromStrategy(_amount); // Strategy returns funds
+
+        strategyAllocations[_strategyAddress] -= _amount;
+        emit StrategyDeallocated(_strategyAddress, _amount);
+    }
+
+    /**
+     * @dev Helper to check if a strategy is added.
+     */
+    function _isStrategyAdded(address _strategyAddress) internal view returns (bool) {
+        for (uint i = 0; i < strategyAddresses.length; i++) {
+            if (strategyAddresses[i] == _strategyAddress) {
+                return true;
             }
         }
-
-        require(bestStrategyAddress != address(0), "Vault: Could not determine best strategy");
-
-        uint256 availableToAllocate = asset.balanceOf(address(this));
-        
-        // If funds are in a previous strategy, "withdraw" them first.
-        if (currentStrategy != address(0) && currentStrategy != bestStrategyAddress && strategyAllocations[currentStrategy] > 0) {
-            uint256 amountFromOldStrategy = strategyAllocations[currentStrategy];
-            // IStrategy(currentStrategy).withdrawFromStrategy(amountFromOldStrategy); // Real call
-            strategyAllocations[currentStrategy] = 0;
-            availableToAllocate += amountFromOldStrategy; // Conceptually moved back to vault
-            emit FundsMoved(currentStrategy, address(this), amountFromOldStrategy);
-        }
-        
-        if (availableToAllocate > 0 && bestStrategyAddress != currentStrategy) {
-            // IStrategy(bestStrategyAddress).depositToStrategy(availableToAllocate); // Real call
-            strategyAllocations[bestStrategyAddress] += availableToAllocate;
-            currentStrategy = bestStrategyAddress;
-            emit StrategyAllocated(bestStrategyAddress, availableToAllocate);
-             emit FundsMoved(address(this), bestStrategyAddress, availableToAllocate);
-        } else if (availableToAllocate > 0 && bestStrategyAddress == currentStrategy) {
-            // If best strategy is already current, deposit new funds into it
-            // IStrategy(bestStrategyAddress).depositToStrategy(availableToAllocate); // Real call
-            strategyAllocations[bestStrategyAddress] += availableToAllocate;
-            emit StrategyAllocated(bestStrategyAddress, availableToAllocate);
-            emit FundsMoved(address(this), bestStrategyAddress, availableToAllocate);
-        }
+        return false;
+    }
+    
+    /**
+     * @dev Gets the number of strategies added to the vault.
+     */
+    function getStrategiesCount() external view returns (uint256) {
+        return strategyAddresses.length;
     }
 
-    function getStrategiesCount() public view returns (uint256) {
-        return strategies.length;
+    /**
+     * @dev Allows owner to update the current strategy (for simple single-strategy focus).
+     */
+    function setCurrentStrategy(address _strategyAddress) external onlyOwner {
+        require(_isStrategyAdded(_strategyAddress), "Vault: Strategy not added");
+        currentStrategy = _strategyAddress;
+    }
+    
+    /**
+     * @dev Allows owner to manually report profit from a strategy to simulate yield.
+     * This would increase the strategy's reported balance, thus increasing vault's totalAssets.
+     * @param _strategyAddress The address of the strategy.
+     * @param _newBalanceFromTheStrategy The new total balance reported by the strategy (principal + yield).
+     */
+    function reportStrategyPerformance(address _strategyAddress, uint256 _newBalanceFromTheStrategy) external onlyOwner {
+        require(_isStrategyAdded(_strategyAddress), "Vault: Strategy not added");
+        // This is a conceptual function. The IMockStrategy interface would need a way for the vault
+        // to tell it to update its balance, or the strategy itself has an admin function.
+        // For this example, we'll assume the strategy can be updated.
+        IMockStrategy(_strategyAddress).updateBalanceWithSimulatedYield(_newBalanceFromTheStrategy);
+        // Note: strategyAllocations map might track principal, while totalAssets() sums up
+        // strategy.balanceOfVault() which includes yield. No direct update to strategyAllocations here
+        // unless it's meant to track current value.
     }
 
-    // Fallback function to receive ETH (if vault logic were to handle ETH directly)
-    // receive() external payable {}
-
-    // It's good practice to allow owner to withdraw stuck ERC20 tokens (not the main asset)
-    function withdrawStuckTokens(address _tokenAddress, uint256 _amount) public onlyOwner {
-        require(_tokenAddress != address(asset), "Vault: Cannot withdraw main asset with this function");
-        IERC20(_tokenAddress).transfer(owner(), _amount);
-    }
+    // ERC20 functions like name(), symbol(), totalSupply(), balanceOf(address) for shares are inherited.
+    // transfer(), approve(), transferFrom() for shares are also inherited.
 }
 
-/**
- * Minimal interfaces for OpenZeppelin contracts.
- */
-// interface IERC20 {
-//     function totalSupply() external view returns (uint256);
-//     function balanceOf(address account) external view returns (uint256);
-//     function transfer(address recipient, uint256 amount) external returns (bool);
-//     function allowance(address owner, address spender) external view returns (uint256);
-//     function approve(address spender, uint256 amount) external returns (bool);
-//     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-//     event Transfer(address indexed from, address indexed to, uint256 value);
-//     event Approval(address indexed owner, address indexed spender, uint256 value);
-// }
-
-// abstract contract Ownable { ... } // Simplified
-// abstract contract ReentrancyGuard { ... } // Simplified

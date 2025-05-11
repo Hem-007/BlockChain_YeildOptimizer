@@ -3,10 +3,10 @@
 export const SEPOLIA_CHAIN_ID = 11155111n; // Sepolia Testnet Chain ID
 
 // Placeholder Addresses - Replace with your deployed contract addresses
-export const HBT_TOKEN_ADDRESS = "0xYourHarborTokenAddressOnSepolia"; // IMPORTANT: Replace this
-export const YIELD_HARBOR_VAULT_ADDRESS = "0xYourYieldHarborVaultAddressOnSepolia"; // IMPORTANT: Replace this
-export const STRATEGY_A_ADDRESS = "0xYourStrategyAAddressOnSepolia"; // IMPORTANT: Replace this
-export const STRATEGY_B_ADDRESS = "0xYourStrategyBAddressOnSepolia"; // IMPORTANT: Replace this
+export const HBT_TOKEN_ADDRESS = "0x0000000000000000000000000000000000000000"; // IMPORTANT: Replace this with actual deployed address
+export const YIELD_HARBOR_VAULT_ADDRESS = "0x0000000000000000000000000000000000000000"; // IMPORTANT: Replace this with actual deployed address
+export const STRATEGY_A_ADDRESS = "0x0000000000000000000000000000000000000000"; // IMPORTANT: Replace this with actual deployed address
+export const STRATEGY_B_ADDRESS = "0x0000000000000000000000000000000000000000"; // IMPORTANT: Replace this with actual deployed address
 
 // ABIs for frontend interaction
 export const HBT_TOKEN_ABI = [
@@ -45,11 +45,12 @@ export const YIELD_HARBOR_VAULT_ABI = [
   "function pricePerShare() view returns (uint256)",
   "function convertToShares(uint256 assetsAmount) view returns (uint256)",
   "function convertToAssets(uint256 sharesAmount) view returns (uint256)",
-  "function deposit(uint256 amount)", // Deposit underlying asset
-  "function withdraw(uint256 sharesAmount)", // Withdraw underlying asset by redeeming shares
+  "function deposit(uint256 amount, address receiver) payable", // Deposit underlying asset
+  "function withdraw(uint256 sharesAmount, address receiver, address owner) payable", // Withdraw underlying asset by redeeming shares
+  "function shares(address owner) view returns (uint256)", // User's vault shares (from YieldHarborVault directly)
   "function valueOfShares(address account) view returns (uint256)", // Value of user's shares in asset terms
   // Strategy Management
-  "function strategyAddresses(uint256 index) view returns (address)",
+  "function strategies(uint256 index) view returns (address)", // Corrected: strategyAddresses -> strategies
   "function strategyAllocations(address strategy) view returns (uint256)",
   "function currentStrategy() view returns (address)",
   "function getStrategiesCount() view returns (uint256)",
@@ -58,21 +59,24 @@ export const YIELD_HARBOR_VAULT_ABI = [
   "function setCurrentStrategy(address strategyAddress)", // Ownable
   "function reportStrategyPerformance(address strategyAddress, uint256 newBalanceFromTheStrategy)", // Ownable
   // Events
-  "event Deposited(address indexed user, uint256 assetsDeposited, uint256 sharesIssued)",
-  "event Withdrawn(address indexed user, uint256 assetsWithdrawn, uint256 sharesBurned)",
+  "event Deposited(address indexed caller, address indexed owner, uint256 assets, uint256 shares)",
+  "event Withdrawn(address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
+  "event StrategyAdded(address indexed strategyAddress)",
   "event StrategyAllocated(address indexed strategy, uint256 amount)",
-  "event StrategyDeallocated(address indexed strategy, uint256 amount)"
+  "event StrategyDeallocated(address indexed strategy, uint256 amount)",
+  "event StrategyReported(address indexed strategy, uint256 gain, uint256 loss, uint256 currentBalance)"
 ];
 
 export const MOCK_STRATEGY_ABI = [
   "function name() view returns (string)",
-  "function asset() view returns (address)",
-  "function getAPY() view returns (uint256)",
-  "function balanceOfVault() view returns (uint256)",
-  "function depositToStrategy(uint256 amount)", // Called by Vault
-  "function withdrawFromStrategy(uint256 amount)", // Called by Vault
-  "function setAPY(uint256 newAPY)", // Ownable
-  "function updateBalanceWithSimulatedYield(uint256 newBalance)", // Ownable
+  "function asset() view returns (address)", // The token this strategy works with (e.g., HBT)
+  "function vault() view returns (address)", // The YieldHarborVault address
+  "function getAPY() view returns (uint256)", // Returns APY as basis points (e.g., 500 for 5.00%)
+  "function balanceOfVault() view returns (uint256)", // Amount of 'asset' this strategy holds for the vault
+  "function depositToStrategy(uint256 amount) external", // Called by Vault to deposit 'asset'
+  "function withdrawFromStrategy(uint256 amount) external", // Called by Vault to withdraw 'asset'
+  "function setAPY(uint256 newAPY) external", // Ownable: To simulate APY changes
+  "function updateBalanceWithSimulatedYield(uint256 newBalance) external", // Ownable: For simulation
   // Events
   "event StrategyDeposited(address indexed fromVault, uint256 amount)",
   "event StrategyWithdrew(address indexed toVault, uint256 amount)",

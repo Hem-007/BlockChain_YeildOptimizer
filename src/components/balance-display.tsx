@@ -33,7 +33,18 @@ const BalanceItem: React.FC<BalanceItemProps> = ({ icon: Icon, label, value, uni
 
 
 export function BalanceDisplay() {
-  const { isConnected, hbtBalance, vaultShares, vaultShareValue, account } = useWeb3();
+  const {
+    isConnected,
+    hbtBalance,
+    vaultShares,
+    vaultShareValue,
+    fakeTokenBalance,
+    fakeVaultShares,
+    fakeVaultShareValue,
+    isSimulationMode,
+    toggleSimulationMode,
+    account
+  } = useWeb3();
   const [isLoadingData, setIsLoadingData] = useState(true);
 
   // Simulate loading delay or use useEffect with actual data fetching status
@@ -50,7 +61,7 @@ export function BalanceDisplay() {
       setIsLoadingData(false);
     }
   }, [isConnected, account]); // Added account to dependencies for re-check if account changes while connected
-  
+
   if (!isConnected) {
     return (
       <Card className="w-full max-w-lg shadow-lg">
@@ -64,33 +75,64 @@ export function BalanceDisplay() {
     );
   }
 
+  const handleToggleMode = () => {
+    toggleSimulationMode();
+  };
+
   return (
     <Card className="w-full max-w-lg shadow-lg">
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Your YieldHarbor Portfolio</CardTitle>
+        <button
+          onClick={handleToggleMode}
+          className={`px-3 py-1 text-xs rounded-full font-medium ${
+            isSimulationMode
+              ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+              : "bg-slate-100 text-slate-800 hover:bg-slate-200"
+          }`}
+        >
+          {isSimulationMode ? "Test Mode" : "Real Mode"}
+        </button>
       </CardHeader>
-      <CardContent className="space-y-2">
-        <BalanceItem
-          icon={Wallet}
-          label="HBT Token Balance"
-          value={parseFloat(hbtBalance).toFixed(4)}
-          unit="HBT"
-          isLoading={isLoadingData && !hbtBalance}
-        />
-        <BalanceItem
-          icon={PieChart}
-          label="Vault Shares"
-          value={parseFloat(vaultShares).toFixed(4)}
-          unit="Shares"
-          isLoading={isLoadingData && !vaultShares}
-        />
-        <BalanceItem
-          icon={TrendingUp}
-          label="Value of Shares"
-          value={parseFloat(vaultShareValue).toFixed(4)}
-          unit="HBT"
-          isLoading={isLoadingData && !vaultShareValue}
-        />
+      <CardContent className="space-y-4">
+        {isSimulationMode && (
+          <div className="bg-amber-50 border border-amber-200 rounded-md p-2 text-xs text-amber-800">
+            You are viewing your simulated test token portfolio. These tokens have no real value.
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium mb-2">
+            {isSimulationMode ? "Test Token Portfolio" : "Real Token Portfolio"}
+          </h3>
+          <BalanceItem
+            icon={Wallet}
+            label={isSimulationMode ? "Test Token Balance" : "HBT Token Balance"}
+            value={parseFloat(isSimulationMode ? fakeTokenBalance : hbtBalance).toFixed(4)}
+            unit={isSimulationMode ? "Tokens" : "HBT"}
+            isLoading={isLoadingData && !(isSimulationMode ? fakeTokenBalance : hbtBalance)}
+          />
+          <BalanceItem
+            icon={PieChart}
+            label="Vault Shares"
+            value={parseFloat(isSimulationMode ? fakeVaultShares : vaultShares).toFixed(4)}
+            unit="Shares"
+            isLoading={isLoadingData && !(isSimulationMode ? fakeVaultShares : vaultShares)}
+          />
+          <BalanceItem
+            icon={TrendingUp}
+            label="Value of Shares"
+            value={parseFloat(isSimulationMode ? fakeVaultShareValue : vaultShareValue).toFixed(4)}
+            unit={isSimulationMode ? "Tokens" : "HBT"}
+            isLoading={isLoadingData && !(isSimulationMode ? fakeVaultShareValue : vaultShareValue)}
+          />
+        </div>
+
+        {isSimulationMode && parseFloat(fakeVaultShares) > 0 && (
+          <div className="text-xs text-green-600 mt-1">
+            Your simulated shares are earning yield based on strategy APY and time since deposit.
+          </div>
+        )}
       </CardContent>
     </Card>
   );

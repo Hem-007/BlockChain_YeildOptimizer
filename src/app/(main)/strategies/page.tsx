@@ -2,14 +2,16 @@
 "use client";
 
 import { StrategyCard } from "@/components/strategy-card";
+import { AddStrategyForm } from "@/components/add-strategy-form";
 import { MOCK_STRATEGIES_DATA, YIELD_HARBOR_VAULT_ABI, YIELD_HARBOR_VAULT_ADDRESS, MOCK_STRATEGY_ABI } from "@/lib/constants";
 import type { StrategyInfo } from "@/lib/constants";
 import { useWeb3 } from "@/contexts/web3-context";
 import { Button } from "@/components/ui/button";
-import { ListFilter, Loader2, AlertTriangle, Shuffle } from "lucide-react";
+import { ListFilter, Loader2, AlertTriangle, Shuffle, Plus } from "lucide-react";
 import { useEffect, useState, useCallback } from "react";
 import { Contract, formatUnits } from "ethers";
 import { useToast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,21 +39,21 @@ export default function StrategiesPage() {
       const vaultContract = new Contract(YIELD_HARBOR_VAULT_ADDRESS, YIELD_HARBOR_VAULT_ABI, provider);
       const strategiesCount = await vaultContract.getStrategiesCount();
       const fetchedStrategies: StrategyInfo[] = [];
-      
+
       const currentStrategyAddress = await vaultContract.currentStrategy();
       setCurrentVaultStrategy(currentStrategyAddress.toLowerCase());
 
       for (let i = 0; i < strategiesCount; i++) {
         const strategyAddress = await vaultContract.strategies(i);
         const strategyContract = new Contract(strategyAddress, MOCK_STRATEGY_ABI, provider);
-        
+
         const [name, apyBigInt, tvlInStrategyBigInt, tokenSymbolResult] = await Promise.allSettled([
             strategyContract.name(),
             strategyContract.getAPY(),
             vaultContract.strategyAllocations(strategyAddress),
             // Assuming strategy might have a `tokenSymbol()` or similar, otherwise use placeholder
             (async () => {
-                try { 
+                try {
                     const tokenAddr = await strategyContract.token();
                     const tokenContract = new Contract(tokenAddr, ["function symbol() view returns (string)"], provider);
                     return await tokenContract.symbol();
@@ -78,15 +80,35 @@ export default function StrategiesPage() {
     }
   }, [isConnected, provider, toast]);
 
+  // Load custom strategies from localStorage
+  const loadCustomStrategies = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      const storedStrategies = localStorage.getItem("custom_strategies");
+      if (storedStrategies) {
+        const customStrategies = JSON.parse(storedStrategies);
+        return customStrategies;
+      }
+    }
+    return [];
+  }, []);
+
+  // Handle adding a new strategy
+  const handleStrategyAdded = useCallback((newStrategy: StrategyInfo) => {
+    setStrategies(prev => [...prev, newStrategy]);
+  }, []);
+
   useEffect(() => {
     if (isConnected) {
       // fetchStrategiesFromContract(); // Uncomment to fetch live data
       // For demo purposes, using MOCK_STRATEGIES_DATA and simulating current strategy
       const mockCurrentStrategy = MOCK_STRATEGIES_DATA.length > 0 ? MOCK_STRATEGIES_DATA[0].address : null;
       setCurrentVaultStrategy(mockCurrentStrategy ? mockCurrentStrategy.toLowerCase() : null);
-      setStrategies(MOCK_STRATEGIES_DATA);
+
+      // Combine mock strategies with custom strategies from localStorage
+      const customStrategies = loadCustomStrategies();
+      setStrategies([...MOCK_STRATEGIES_DATA, ...customStrategies]);
     }
-  }, [isConnected, fetchStrategiesFromContract]);
+  }, [isConnected, fetchStrategiesFromContract, loadCustomStrategies]);
 
   const handleAllocateToBestStrategy = async () => {
     if (!signer) {
@@ -134,10 +156,29 @@ export default function StrategiesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-        <Button onClick={handleAllocateToBestStrategy} disabled={!isConnected || isAllocating || isLoading} className="bg-accent hover:bg-accent/90 text-accent-foreground">
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button variant="default" className="bg-primary">
+                <Plus className="mr-2 h-4 w-4" />
+                Add Strategy
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[500px]">
+              <DialogHeader>
+                <DialogTitle>Add New Strategy</DialogTitle>
+                <DialogDescription>
+                  Create a custom yield strategy for the YieldHarbor vault.
+                </DialogDescription>
+              </DialogHeader>
+              <AddStrategyForm onStrategyAdded={handleStrategyAdded} />
+            </DialogContent>
+          </Dialog>
+
+          <Button onClick={handleAllocateToBestStrategy} disabled={!isConnected || isAllocating || isLoading} className="bg-accent hover:bg-accent/90 text-accent-foreground">
             {isAllocating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Shuffle className="mr-2 h-4 w-4" />}
             Simulate Allocation
           </Button>
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline">

@@ -12,6 +12,7 @@ import {
   ListTree,
   PieChart,
   Anchor,
+  History,
 } from "lucide-react";
 import {
   Tooltip,
@@ -33,6 +34,7 @@ const navItems: NavItem[] = [
   { href: "/withdraw", label: "Withdraw", icon: ArrowUpFromLine },
   { href: "/strategies", label: "Strategies", icon: ListTree },
   { href: "/portfolio", label: "Portfolio", icon: PieChart },
+  { href: "/history", label: "History", icon: History },
 ];
 
 export function SidebarNav({ isCollapsed }: { isCollapsed: boolean }) {
@@ -43,7 +45,7 @@ export function SidebarNav({ isCollapsed }: { isCollapsed: boolean }) {
       <nav className="flex flex-col gap-1 px-2">
         {navItems.map((item) => {
           const isActive = pathname === item.href || (pathname.startsWith(item.href) && item.href !== "/dashboard" || (pathname === "/" && item.href === "/dashboard"));
-          
+
           return (
             <Tooltip key={item.href}>
               <TooltipTrigger asChild>

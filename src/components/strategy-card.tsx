@@ -1,10 +1,12 @@
 
 "use client";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TrendingUp, BarChartBig, Zap, DollarSign } from "lucide-react";
+import { TrendingUp, BarChartBig, Zap, DollarSign, ArrowRight } from "lucide-react";
 import type { StrategyInfo } from "@/lib/constants";
+import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 import Image from "next/image";
 
 interface StrategyCardProps {
@@ -27,6 +29,12 @@ const TokenIcon: React.FC<{ symbol?: string }> = ({ symbol }) => {
 };
 
 export function StrategyCard({ strategy }: StrategyCardProps) {
+  const router = useRouter();
+
+  const handleViewDetails = () => {
+    router.push(`/strategies/${strategy.address}`);
+  };
+
   return (
     <Card className="shadow-lg hover:shadow-xl transition-shadow duration-300 flex flex-col h-full">
       <CardHeader className="pb-3">
@@ -61,12 +69,17 @@ export function StrategyCard({ strategy }: StrategyCardProps) {
             </div>
         )}
       </CardContent>
-      {/* Add action buttons if needed, e.g., for admin to rebalance */}
-      {/* <CardFooter>
-        <Button variant="outline" size="sm" className="w-full">
-          View Details (Conceptual)
+      <CardFooter>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={handleViewDetails}
+        >
+          View Strategy Details
+          <ArrowRight className="ml-2 h-4 w-4" />
         </Button>
-      </CardFooter> */}
+      </CardFooter>
     </Card>
   );
 }
